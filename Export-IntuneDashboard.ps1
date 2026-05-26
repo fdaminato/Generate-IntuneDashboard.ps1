@@ -59,7 +59,7 @@ param(
 
     [string]$BitLockerRemediationName = "DaaS - Detection - Bitlocker - Get status",
 
-    [int]$MaxBitLockerRunStates = 3500,
+    [int]$MaxBitLockerRunStates = 5000,
 
     [int]$MaxDefenderDetailQueries = 5000,
 
@@ -69,9 +69,13 @@ param(
 
     [string]$LenovoSecureBootRemediationName = "Remediate - Secure boot - Enable secure boot on Lenovo",
 
+    [string]$SecureBootCertificateRemediationName = "DaaS - Detection - New secure boot certificate",
+
     [int]$MaxInventoryRunStates = 5000,
 
     [int]$MaxSecureBootRunStates = 5000,
+
+    [int]$MaxSecureBootCertificateRunStates = 5000,
 
     [string]$LenovoSecureBootBiosCsvPath,
 
@@ -133,6 +137,7 @@ $PrimaryUserAccountRawPath = Join-Path $BaseOutputFolder "Intune-PrimaryUser-Acc
 $VIPDeviceGroupMembershipRawPath = Join-Path $BaseOutputFolder "Entra-VIPDeviceGroupMembership-Raw-$Timestamp.json"
 $SecureBootRawPath = Join-Path $BaseOutputFolder "Intune-SecureBoot-Simple-Raw-$Timestamp.json"
 $LenovoSecureBootRemediationRawPath = Join-Path $BaseOutputFolder "Intune-LenovoSecureBoot-Remediation-Raw-$Timestamp.json"
+$SecureBootCertificateRawPath = Join-Path $BaseOutputFolder "Intune-SecureBootCertificate2023-Remediation-Raw-$Timestamp.json"
 $BitLockerRawPath = Join-Path $BaseOutputFolder "Intune-BitLocker-Remediation-Raw-$Timestamp.json"
 $DeviceEncryptionRawPath = Join-Path $BaseOutputFolder "Intune-DeviceEncryption-Report-Raw-$Timestamp.json"
 $DefenderRawPath = Join-Path $BaseOutputFolder "Intune-Defender-WindowsProtectionState-Raw-$Timestamp.json"
@@ -1415,6 +1420,207 @@ function Get-SecureBootRemediationResults {
     Write-Host "Lenovo Secure Boot remediation run states retrieved: $($RunStates.Count)" -ForegroundColor Green
     Write-Host "Lenovo Secure Boot remediation mapped by device id: $($ResultsByDeviceId.Count)" -ForegroundColor Green
     Write-Host "Lenovo Secure Boot remediation mapped by device name: $($ResultsByDeviceName.Count)" -ForegroundColor Green
+
+    return [pscustomobject]@{
+        ByDeviceId   = $ResultsByDeviceId
+        ByDeviceName = $ResultsByDeviceName
+        Count        = $RunStates.Count
+    }
+}
+
+function ConvertTo-SecureBootCertificate2023Summary {
+    param(
+        [string]$Output,
+        [string]$DetectionState,
+        [string]$RemediationState
+    )
+
+    $Text = Normalize-Value $Output
+    $UEFICA2023Status = ""
+    $ParseMethod = "None"
+
+    if (-not [string]::IsNullOrWhiteSpace($Text)) {
+        try {
+            $Json = $Text | ConvertFrom-Json -ErrorAction Stop
+            if ($Json -is [array]) { $Json = $Json | Select-Object -First 1 }
+            $UEFICA2023Status = Get-PropertyValue -Object $Json -PropertyNames @("UEFICA2023Status", "Status", "SecureBootCertificateStatus")
+            $ParseMethod = "JSON"
+        }
+        catch {
+            $KeyValues = Parse-KeyValueOutput -Output $Text
+            foreach ($Key in @("UEFICA2023Status", "Status", "SecureBootCertificateStatus")) {
+                if ($KeyValues.Contains($Key)) {
+                    $UEFICA2023Status = Normalize-Value $KeyValues[$Key]
+                    $ParseMethod = "KeyValue"
+                    break
+                }
+            }
+
+            if ([string]::IsNullOrWhiteSpace($UEFICA2023Status) -and $Text -match '"UEFICA2023Status"\s*:\s*"([^"]+)"') {
+                $UEFICA2023Status = Normalize-Value $Matches[1]
+                $ParseMethod = "Regex"
+            }
+        }
+    }
+
+    switch ((Normalize-Value $UEFICA2023Status).ToLowerInvariant()) {
+        "updated" {
+            return [pscustomobject]@{
+                Status            = "Yes"
+                Category          = "detected"
+                UEFICA2023Status  = $UEFICA2023Status
+                Detail            = "Secure Boot 2023 certificates are detected on the device."
+                ParseMethod       = $ParseMethod
+            }
+        }
+        "inprogress" {
+            return [pscustomobject]@{
+                Status            = "Detected but reboot pending"
+                Category          = "pendingReboot"
+                UEFICA2023Status  = $UEFICA2023Status
+                Detail            = "Secure Boot 2023 certificates are detected, but a reboot is still pending."
+                ParseMethod       = $ParseMethod
+            }
+        }
+        "notstarted" {
+            return [pscustomobject]@{
+                Status            = "No"
+                Category          = "notDetected"
+                UEFICA2023Status  = $UEFICA2023Status
+                Detail            = "Secure Boot 2023 certificates are not detected on the device."
+                ParseMethod       = $ParseMethod
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Text) -and [string]::IsNullOrWhiteSpace($DetectionState) -and [string]::IsNullOrWhiteSpace($RemediationState)) {
+        return [pscustomobject]@{
+            Status            = "No remediation result"
+            Category          = "missing"
+            UEFICA2023Status  = ""
+            Detail            = "No Secure Boot 2023 certificate detection run state was found for this device."
+            ParseMethod       = $ParseMethod
+        }
+    }
+
+    return [pscustomobject]@{
+        Status            = "Review"
+        Category          = "review"
+        UEFICA2023Status  = $UEFICA2023Status
+        Detail            = "Detection output was found, but UEFICA2023Status could not be classified automatically."
+        ParseMethod       = $ParseMethod
+    }
+}
+
+function Get-SecureBootCertificate2023RemediationResults {
+    param(
+        [Parameter(Mandatory)]
+        [string]$RemediationName,
+
+        [int]$Top = 50,
+
+        [int]$MaxRunStates = 5000,
+
+        [string]$RawExportPath
+    )
+
+    $ResultsByDeviceId = @{}
+    $ResultsByDeviceName = @{}
+
+    $Remediation = Get-IntuneRemediationByName -DisplayName $RemediationName
+
+    if (-not $Remediation) {
+        return [pscustomobject]@{
+            ByDeviceId   = $ResultsByDeviceId
+            ByDeviceName = $ResultsByDeviceName
+            Count        = 0
+        }
+    }
+
+    $RemediationId = $Remediation.id
+
+    Write-Host ""
+    Write-Host "Retrieving Secure Boot 2023 certificate detection run states..." -ForegroundColor Cyan
+
+    $Uri = "https://graph.microsoft.com/beta/deviceManagement/deviceHealthScripts/$RemediationId/deviceRunStates?`$top=$Top"
+    $SafeResult = Invoke-GraphGetAllSafe -Uri $Uri -MaxItems $MaxRunStates
+    $RunStates = @($SafeResult["Results"])
+
+    if (-not [string]::IsNullOrWhiteSpace($SafeResult["FailedUri"])) {
+        Write-Host "Stopped after failed page:" -ForegroundColor Yellow
+        Write-Host $SafeResult["FailedUri"] -ForegroundColor Yellow
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($RawExportPath)) {
+        try {
+            $RunStates | ConvertTo-Json -Depth 30 | Out-File -FilePath $RawExportPath -Encoding UTF8
+            Write-Host "Raw Secure Boot 2023 certificate detection run states exported: $RawExportPath" -ForegroundColor Green
+        }
+        catch {
+            Write-Warning "Could not export raw Secure Boot 2023 certificate detection run states."
+        }
+    }
+
+    foreach ($RunState in $RunStates) {
+        $OutputInfo = Get-BestDetectionOutput -RunState $RunState
+        $RunStateId = Get-PropertyValue -Object $RunState -PropertyNames @("id")
+        $DetectionState = Get-PropertyValue -Object $RunState -PropertyNames @("detectionState")
+        $RemediationState = Get-PropertyValue -Object $RunState -PropertyNames @("remediationState")
+        $Summary = ConvertTo-SecureBootCertificate2023Summary -Output $OutputInfo.Output -DetectionState $DetectionState -RemediationState $RemediationState
+
+        $ManagedDeviceId = Get-PropertyValue -Object $RunState -PropertyNames @(
+            "managedDeviceId",
+            "managedDeviceID",
+            "managedDeviceIdString",
+            "deviceId",
+            "deviceID"
+        )
+
+        if ([string]::IsNullOrWhiteSpace($ManagedDeviceId)) {
+            $ManagedDeviceId = Get-ManagedDeviceIdFromRunStateId -RunStateId $RunStateId -ScriptId $RemediationId
+        }
+
+        $DeviceName = Get-PropertyValue -Object $RunState -PropertyNames @(
+            "deviceName",
+            "managedDeviceName",
+            "deviceDisplayName",
+            "managedDeviceDeviceName"
+        )
+
+        if ([string]::IsNullOrWhiteSpace($DeviceName) -and -not [string]::IsNullOrWhiteSpace($OutputInfo.Output)) {
+            if ($OutputInfo.Output -match '(?i)(DeviceName|ComputerName|Hostname)\s*[=:]\s*([^|\r\n]+)') {
+                $DeviceName = Normalize-Value $Matches[2]
+            }
+        }
+
+        $Record = [pscustomobject]@{
+            DeviceName         = $DeviceName
+            IntuneDeviceId     = $ManagedDeviceId
+            RunStateId         = $RunStateId
+            LastRunDateTime    = Get-PropertyValue -Object $RunState -PropertyNames @("lastStateUpdateDateTime","lastSyncDateTime")
+            DetectionState     = $DetectionState
+            RemediationState   = $RemediationState
+            OutputField        = $OutputInfo.OutputField
+            Status             = $Summary.Status
+            Category           = $Summary.Category
+            UEFICA2023Status   = $Summary.UEFICA2023Status
+            Detail             = $Summary.Detail
+            ParseMethod        = $Summary.ParseMethod
+            RawOutput          = $OutputInfo.Output
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($ManagedDeviceId)) {
+            $ResultsByDeviceId[$ManagedDeviceId.ToLowerInvariant()] = $Record
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($DeviceName)) {
+            $ResultsByDeviceName[$DeviceName.ToLowerInvariant()] = $Record
+        }
+    }
+
+    Write-Host "Secure Boot 2023 certificate detection run states retrieved: $($RunStates.Count)" -ForegroundColor Green
+    Write-Host "Secure Boot 2023 certificate detection mapped by device id: $($ResultsByDeviceId.Count)" -ForegroundColor Green
+    Write-Host "Secure Boot 2023 certificate detection mapped by device name: $($ResultsByDeviceName.Count)" -ForegroundColor Green
 
     return [pscustomobject]@{
         ByDeviceId   = $ResultsByDeviceId
@@ -4077,6 +4283,7 @@ $PrimaryUserAccountRawPath = Join-Path $OutputFolder "Intune-PrimaryUser-Account
 $VIPDeviceGroupMembershipRawPath = Join-Path $OutputFolder "Entra-VIPDeviceGroupMembership-Raw-$Timestamp.json"
 $SecureBootRawPath = Join-Path $OutputFolder "Intune-SecureBoot-Simple-Raw-$Timestamp.json"
 $LenovoSecureBootRemediationRawPath = Join-Path $OutputFolder "Intune-LenovoSecureBoot-Remediation-Raw-$Timestamp.json"
+$SecureBootCertificateRawPath = Join-Path $OutputFolder "Intune-SecureBootCertificate2023-Remediation-Raw-$Timestamp.json"
 $BitLockerRawPath = Join-Path $OutputFolder "Intune-BitLocker-Remediation-Raw-$Timestamp.json"
 $DeviceEncryptionRawPath = Join-Path $OutputFolder "Intune-DeviceEncryption-Report-Raw-$Timestamp.json"
 $DefenderRawPath = Join-Path $OutputFolder "Intune-Defender-WindowsProtectionState-Raw-$Timestamp.json"
@@ -4286,6 +4493,23 @@ $LenovoSecureBootRemediationByDeviceName = $LenovoSecureBootRemediationResults.B
 Write-Host "Lenovo Secure Boot remediation run states imported: $($LenovoSecureBootRemediationResults.Count)" -ForegroundColor Green
 
 # ============================================================
+# Retrieve Secure Boot 2023 certificate detection output
+# ============================================================
+
+Write-Host ""
+Write-Host "Retrieving Secure Boot 2023 certificate detection output..." -ForegroundColor Cyan
+
+$SecureBootCertificateResults = Get-SecureBootCertificate2023RemediationResults `
+    -RemediationName $SecureBootCertificateRemediationName `
+    -MaxRunStates $MaxSecureBootCertificateRunStates `
+    -RawExportPath $SecureBootCertificateRawPath
+
+$SecureBootCertificateByDeviceId = $SecureBootCertificateResults.ByDeviceId
+$SecureBootCertificateByDeviceName = $SecureBootCertificateResults.ByDeviceName
+
+Write-Host "Secure Boot 2023 certificate detection run states imported: $($SecureBootCertificateResults.Count)" -ForegroundColor Green
+
+# ============================================================
 # Retrieve Defender deployment/protection state
 # ============================================================
 
@@ -4462,6 +4686,15 @@ $Rows = foreach ($Device in $ManagedDevices) {
         $LenovoSecureBootRemediationRecord = $LenovoSecureBootRemediationByDeviceName[$DeviceKey]
     }
 
+    $SecureBootCertificateRecord = $null
+
+    if (-not [string]::IsNullOrWhiteSpace($DeviceIdKey) -and $SecureBootCertificateByDeviceId.ContainsKey($DeviceIdKey)) {
+        $SecureBootCertificateRecord = $SecureBootCertificateByDeviceId[$DeviceIdKey]
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($DeviceKey) -and $SecureBootCertificateByDeviceName.ContainsKey($DeviceKey)) {
+        $SecureBootCertificateRecord = $SecureBootCertificateByDeviceName[$DeviceKey]
+    }
+
     $DefenderRecord = $null
 
     if (-not [string]::IsNullOrWhiteSpace($DeviceIdKey) -and $DefenderByDeviceId.ContainsKey($DeviceIdKey)) {
@@ -4594,6 +4827,13 @@ $Rows = foreach ($Device in $ManagedDevices) {
     $TpmReady = ""
     $LenovoSB2023Readiness = "Review - not evaluated"
     $LenovoSB2023Category = "review"
+    $LenovoSB2023Detected = "No remediation result"
+    $LenovoSB2023DetectedCategory = "missing"
+    $LenovoSB2023DetectedRawStatus = ""
+    $LenovoSB2023DetectedLastRun = ""
+    $LenovoSB2023DetectedDetail = ""
+    $LenovoSB2023DetectedOutputField = ""
+    $LenovoSB2023DetectedRawOutput = ""
     $LenovoSB2023Product = ""
     $LenovoSB2023ModelPrefix = ""
     $LenovoSB2023RequiredBios = ""
@@ -4674,6 +4914,16 @@ $Rows = foreach ($Device in $ManagedDevices) {
         $LenovoSecureBootRemediationOutputField = Normalize-Value $LenovoSecureBootRemediationRecord.OutputField
     }
 
+    if ($SecureBootCertificateRecord) {
+        $LenovoSB2023Detected = Use-ValueOrUnknown $SecureBootCertificateRecord.Status "Review"
+        $LenovoSB2023DetectedCategory = Use-ValueOrUnknown $SecureBootCertificateRecord.Category "review"
+        $LenovoSB2023DetectedRawStatus = Normalize-Value $SecureBootCertificateRecord.UEFICA2023Status
+        $LenovoSB2023DetectedLastRun = Normalize-Value $SecureBootCertificateRecord.LastRunDateTime
+        $LenovoSB2023DetectedDetail = Normalize-Value $SecureBootCertificateRecord.Detail
+        $LenovoSB2023DetectedOutputField = Normalize-Value $SecureBootCertificateRecord.OutputField
+        $LenovoSB2023DetectedRawOutput = Normalize-Value $SecureBootCertificateRecord.RawOutput
+    }
+
     if ($DefenderRecord) {
         $DefenderStatus = Use-ValueOrUnknown $DefenderRecord.DefenderStatus
         $DefenderStatusCategory = Use-ValueOrUnknown $DefenderRecord.DefenderStatusCategory "unknown"
@@ -4741,6 +4991,8 @@ $Rows = foreach ($Device in $ManagedDevices) {
         $BitLockerSource = "Non-Windows device"
         $LenovoSB2023Readiness = "Not applicable"
         $LenovoSB2023Category = "notApplicable"
+        $LenovoSB2023Detected = "Not applicable"
+        $LenovoSB2023DetectedCategory = "notApplicable"
         $DellSB2023Readiness = "Not applicable"
         $DellSB2023Category = "notApplicable"
         $HPSB2023Readiness = "Not applicable"
@@ -5027,6 +5279,13 @@ $Rows = foreach ($Device in $ManagedDevices) {
         TpmReady                        = $TpmReady
         LenovoSB2023Readiness           = $LenovoSB2023Readiness
         LenovoSB2023Category            = $LenovoSB2023Category
+        LenovoSB2023Detected            = $LenovoSB2023Detected
+        LenovoSB2023DetectedCategory    = $LenovoSB2023DetectedCategory
+        LenovoSB2023DetectedRawStatus   = $LenovoSB2023DetectedRawStatus
+        LenovoSB2023DetectedLastRun     = $LenovoSB2023DetectedLastRun
+        LenovoSB2023DetectedDetail      = $LenovoSB2023DetectedDetail
+        LenovoSB2023DetectedOutputField = $LenovoSB2023DetectedOutputField
+        LenovoSB2023DetectedRawOutput   = $LenovoSB2023DetectedRawOutput
         LenovoSB2023Product             = $LenovoSB2023Product
         LenovoSB2023ModelPrefix         = $LenovoSB2023ModelPrefix
         LenovoSB2023RequiredBios        = $LenovoSB2023RequiredBios
@@ -6356,7 +6615,8 @@ $Html = @"
                         <th>📋 Autopilot Profile</th>
                         <th>🧬 Firmware</th>
                         <th>✅ Lenovo SB 2023</th>
-                        <th>📌 Lenovo required BIOS for SB 2023 certificate for SB 2023 certificate for SB 2023 certificate</th>
+                        <th>🔐 Lenovo SB 2023 detected</th>
+                        <th>📌 Lenovo required BIOS for SB 2023 certificate</th>
                         <th>🧩 Lenovo Product</th>
                         <th>✅ Dell SB 2023</th>
                         <th>📌 Dell Required BIOS</th>
@@ -6543,6 +6803,14 @@ function getPillEmoji(value, type) {
         return "❔ ";
     }
 
+    if (type === "sb2023detected") {
+        if (v === "yes") return "✅ ";
+        if (v === "no") return "❌ ";
+        if (v.includes("reboot pending")) return "🔁 ";
+        if (v.includes("review")) return "🧩 ";
+        return "❔ ";
+    }
+
     if (type === "lenovo") {
         if (v === "ready") return "✅ ";
         if (v === "update bios") return "⚠️ ";
@@ -6651,6 +6919,15 @@ function pill(value, type) {
         const v = clean.toLowerCase();
         if (v === "good") cls += " good";
         else if (v === "review ownership" || v === "review") cls += " bad";
+        else cls += " warn";
+    }
+
+    if (type === "sb2023detected") {
+        const v = clean.toLowerCase();
+        if (v === "yes") cls += " good";
+        else if (v === "no") cls += " bad";
+        else if (v.includes("reboot pending")) cls += " warn";
+        else if (v === "no remediation result" || v === "not applicable") cls += "";
         else cls += " warn";
     }
 
@@ -7374,6 +7651,10 @@ function openDeviceDrawer(deviceId) {
     if (isLenovoDevice(d)) {
         hardwareRows.push(
             ["Lenovo Certificate SB 2023 readiness", d.LenovoSB2023Readiness],
+            ["Lenovo Certificate SB 2023 detected", d.LenovoSB2023Detected],
+            ["Lenovo Certificate SB 2023 detected raw status", d.LenovoSB2023DetectedRawStatus],
+            ["Lenovo Certificate SB 2023 detected last run", d.LenovoSB2023DetectedLastRun],
+            ["Lenovo Certificate SB 2023 detected detail", d.LenovoSB2023DetectedDetail],
             ["Lenovo product", d.LenovoSB2023Product],
             ["Lenovo model prefix", d.LenovoSB2023ModelPrefix],
             ["Lenovo required BIOS for SB 2023 certificate", d.LenovoSB2023RequiredBios],
@@ -7531,6 +7812,7 @@ function renderTable(rows) {
             "<td>" + escapeHtml(d.AutopilotProfile) + "</td>" +
             "<td>" + escapeHtml(d.FirmwareVersion) + "</td>" +
             "<td>" + (isLenovoDevice(d) ? pill(d.LenovoSB2023Readiness || "Review", "lenovo") : "—") + "</td>" +
+            "<td>" + (isLenovoDevice(d) ? pill(d.LenovoSB2023Detected || "No remediation result", "sb2023detected") : "—") + "</td>" +
             "<td>" + (isLenovoDevice(d) ? escapeHtml(d.LenovoSB2023RequiredBios) : "—") + "</td>" +
             "<td>" + (isLenovoDevice(d) ? escapeHtml(d.LenovoSB2023Product) : "—") + "</td>" +
             "<td>" + (isDellDevice(d) ? pill(d.DellSB2023Readiness || "Review", "lenovo") : "—") + "</td>" +
