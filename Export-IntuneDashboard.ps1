@@ -40,6 +40,10 @@
 
 .EXECUTION
 
+Default values in script
+.\Export-IntuneDashboard.ps1 -OpenReport
+
+Custom values
 .\Export-IntuneDashboard.ps1 -MinimumUBR_26100 8037 -MinimumUBR_26200 8037 -MaxBitLockerRunStates 5000 -MaxDefenderDetailQueries 5000 -MaxInventoryRunStates 5000 -MaxSecureBootRunStates 5000 -OpenReport
 
 
