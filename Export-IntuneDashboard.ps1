@@ -4829,11 +4829,6 @@ $Rows = foreach ($Device in $ManagedDevices) {
     $LenovoSB2023Category = "review"
     $LenovoSB2023Detected = "No remediation result"
     $LenovoSB2023DetectedCategory = "missing"
-    $LenovoSB2023DetectedRawStatus = ""
-    $LenovoSB2023DetectedLastRun = ""
-    $LenovoSB2023DetectedDetail = ""
-    $LenovoSB2023DetectedOutputField = ""
-    $LenovoSB2023DetectedRawOutput = ""
     $LenovoSB2023Product = ""
     $LenovoSB2023ModelPrefix = ""
     $LenovoSB2023RequiredBios = ""
@@ -4917,11 +4912,6 @@ $Rows = foreach ($Device in $ManagedDevices) {
     if ($SecureBootCertificateRecord) {
         $LenovoSB2023Detected = Use-ValueOrUnknown $SecureBootCertificateRecord.Status "Review"
         $LenovoSB2023DetectedCategory = Use-ValueOrUnknown $SecureBootCertificateRecord.Category "review"
-        $LenovoSB2023DetectedRawStatus = Normalize-Value $SecureBootCertificateRecord.UEFICA2023Status
-        $LenovoSB2023DetectedLastRun = Normalize-Value $SecureBootCertificateRecord.LastRunDateTime
-        $LenovoSB2023DetectedDetail = Normalize-Value $SecureBootCertificateRecord.Detail
-        $LenovoSB2023DetectedOutputField = Normalize-Value $SecureBootCertificateRecord.OutputField
-        $LenovoSB2023DetectedRawOutput = Normalize-Value $SecureBootCertificateRecord.RawOutput
     }
 
     if ($DefenderRecord) {
@@ -5281,11 +5271,6 @@ $Rows = foreach ($Device in $ManagedDevices) {
         LenovoSB2023Category            = $LenovoSB2023Category
         LenovoSB2023Detected            = $LenovoSB2023Detected
         LenovoSB2023DetectedCategory    = $LenovoSB2023DetectedCategory
-        LenovoSB2023DetectedRawStatus   = $LenovoSB2023DetectedRawStatus
-        LenovoSB2023DetectedLastRun     = $LenovoSB2023DetectedLastRun
-        LenovoSB2023DetectedDetail      = $LenovoSB2023DetectedDetail
-        LenovoSB2023DetectedOutputField = $LenovoSB2023DetectedOutputField
-        LenovoSB2023DetectedRawOutput   = $LenovoSB2023DetectedRawOutput
         LenovoSB2023Product             = $LenovoSB2023Product
         LenovoSB2023ModelPrefix         = $LenovoSB2023ModelPrefix
         LenovoSB2023RequiredBios        = $LenovoSB2023RequiredBios
@@ -7652,9 +7637,6 @@ function openDeviceDrawer(deviceId) {
         hardwareRows.push(
             ["Lenovo Certificate SB 2023 readiness", d.LenovoSB2023Readiness],
             ["Lenovo Certificate SB 2023 detected", d.LenovoSB2023Detected],
-            ["Lenovo Certificate SB 2023 detected raw status", d.LenovoSB2023DetectedRawStatus],
-            ["Lenovo Certificate SB 2023 detected last run", d.LenovoSB2023DetectedLastRun],
-            ["Lenovo Certificate SB 2023 detected detail", d.LenovoSB2023DetectedDetail],
             ["Lenovo product", d.LenovoSB2023Product],
             ["Lenovo model prefix", d.LenovoSB2023ModelPrefix],
             ["Lenovo required BIOS for SB 2023 certificate", d.LenovoSB2023RequiredBios],
