@@ -44,7 +44,7 @@ Default values in script
 .\Export-IntuneDashboard.ps1 -OpenReport
 
 Custom values
-.\Export-IntuneDashboard.ps1 -MinimumUBR_26100 8037 -MinimumUBR_26200 8037 -MaxBitLockerRunStates 5000 -MaxDefenderDetailQueries 5000 -MaxInventoryRunStates 5000 -MaxSecureBootRunStates 5000 -OpenReport
+.\Export-IntuneDashboard.ps1 -MinimumUBR_26100 8246 -MinimumUBR_26200 8246 -MaxBitLockerRunStates 5000 -MaxDefenderDetailQueries 5000 -MaxInventoryRunStates 5000 -MaxSecureBootRunStates 5000 -OpenReport
 
 
 #>
@@ -55,9 +55,9 @@ param(
 
     [string]$CustomerName,
 
-    [int]$MinimumUBR_26100 = 8037,
+    [int]$MinimumUBR_26100 = 8246,
 
-    [int]$MinimumUBR_26200 = 8037,
+    [int]$MinimumUBR_26200 = 8246,
 
     [int]$ReportExportTimeoutSeconds = 300,
 
@@ -97,6 +97,8 @@ param(
     [bool]$DisableLoginByWAM = $true,
 
     [switch]$UseDeviceCode,
+
+    [string]$DailyCsvArchiveRoot = "C:\Users\Florian.Daminato\OneDrive - ITI inc\Documents - Modern Workplace ITI\-Customers\Fairstone\DaaS\Daily CSVs",
 
     [switch]$OpenReport
 )
@@ -4831,8 +4833,8 @@ $Rows = foreach ($Device in $ManagedDevices) {
     $TpmReady = ""
     $LenovoSB2023Readiness = "Review - not evaluated"
     $LenovoSB2023Category = "review"
-    $LenovoSB2023Detected = "No remediation result"
-    $LenovoSB2023DetectedCategory = "missing"
+    $SB2023Detected = "No remediation result"
+    $SB2023DetectedCategory = "missing"
     $LenovoSB2023Product = ""
     $LenovoSB2023ModelPrefix = ""
     $LenovoSB2023RequiredBios = ""
@@ -4914,8 +4916,8 @@ $Rows = foreach ($Device in $ManagedDevices) {
     }
 
     if ($SecureBootCertificateRecord) {
-        $LenovoSB2023Detected = Use-ValueOrUnknown $SecureBootCertificateRecord.Status "Review"
-        $LenovoSB2023DetectedCategory = Use-ValueOrUnknown $SecureBootCertificateRecord.Category "review"
+        $SB2023Detected = Use-ValueOrUnknown $SecureBootCertificateRecord.Status "Review"
+        $SB2023DetectedCategory = Use-ValueOrUnknown $SecureBootCertificateRecord.Category "review"
     }
 
     if ($DefenderRecord) {
@@ -4985,8 +4987,8 @@ $Rows = foreach ($Device in $ManagedDevices) {
         $BitLockerSource = "Non-Windows device"
         $LenovoSB2023Readiness = "Not applicable"
         $LenovoSB2023Category = "notApplicable"
-        $LenovoSB2023Detected = "Not applicable"
-        $LenovoSB2023DetectedCategory = "notApplicable"
+        $SB2023Detected = "Not applicable"
+        $SB2023DetectedCategory = "notApplicable"
         $DellSB2023Readiness = "Not applicable"
         $DellSB2023Category = "notApplicable"
         $HPSB2023Readiness = "Not applicable"
@@ -5273,8 +5275,8 @@ $Rows = foreach ($Device in $ManagedDevices) {
         TpmReady                        = $TpmReady
         LenovoSB2023Readiness           = $LenovoSB2023Readiness
         LenovoSB2023Category            = $LenovoSB2023Category
-        LenovoSB2023Detected            = $LenovoSB2023Detected
-        LenovoSB2023DetectedCategory    = $LenovoSB2023DetectedCategory
+        SB2023Detected            = $SB2023Detected
+        SB2023DetectedCategory    = $SB2023DetectedCategory
         LenovoSB2023Product             = $LenovoSB2023Product
         LenovoSB2023ModelPrefix         = $LenovoSB2023ModelPrefix
         LenovoSB2023RequiredBios        = $LenovoSB2023RequiredBios
@@ -5719,6 +5721,29 @@ $Rows | ConvertTo-Json -Depth 20 | Out-File -FilePath $JsonPath -Encoding UTF8
 Write-Host ""
 Write-Host "CSV exported:  $CsvPath" -ForegroundColor Green
 Write-Host "JSON exported: $JsonPath" -ForegroundColor Green
+
+# ============================================================
+# Copy final CSV to daily archive folder
+# ============================================================
+
+if (-not [string]::IsNullOrWhiteSpace($DailyCsvArchiveRoot)) {
+    try {
+        $DailyCsvArchiveDayFolder = Join-Path $DailyCsvArchiveRoot $RunDateFolder
+
+        if (!(Test-Path $DailyCsvArchiveDayFolder)) {
+            New-Item -Path $DailyCsvArchiveDayFolder -ItemType Directory -Force | Out-Null
+        }
+
+        $DailyCsvArchivePath = Join-Path $DailyCsvArchiveDayFolder (Split-Path -Path $CsvPath -Leaf)
+        Copy-Item -Path $CsvPath -Destination $DailyCsvArchivePath -Force
+
+        Write-Host "Daily CSV copied: $DailyCsvArchivePath" -ForegroundColor Green
+    }
+    catch {
+        Write-Warning "Could not copy final CSV to daily archive folder."
+        Write-Warning $_.Exception.Message
+    }
+}
 
 # ============================================================
 # Prepare dashboard data
@@ -6534,7 +6559,7 @@ $Html = @"
             <details class="check-filter" id="manufacturerFilterMenu">
                 <summary><span id="manufacturerFilterSummary">All manufacturers</span></summary>
                 <div class="check-filter-panel" id="manufacturerFilterPanel"></div>
-            </details>
+            </details>2023 detec
 
             <details class="check-filter" id="managementAgentFilterMenu">
                 <summary><span id="managementAgentFilterSummary">All mgmt agents</span></summary>
@@ -6604,7 +6629,7 @@ $Html = @"
                         <th>📋 Autopilot Profile</th>
                         <th>🧬 Firmware</th>
                         <th>✅ Lenovo SB 2023</th>
-                        <th>🔐 Lenovo SB 2023 detected</th>
+                        <th>🔐 SB 2023 detected</th>
                         <th>📌 Lenovo required BIOS for SB 2023 certificate</th>
                         <th>🧩 Lenovo Product</th>
                         <th>✅ Dell SB 2023</th>
@@ -7640,7 +7665,7 @@ function openDeviceDrawer(deviceId) {
     if (isLenovoDevice(d)) {
         hardwareRows.push(
             ["Lenovo Certificate SB 2023 readiness", d.LenovoSB2023Readiness],
-            ["Lenovo Certificate SB 2023 detected", d.LenovoSB2023Detected],
+            ["Certificate SB 2023 detected", d.SB2023Detected],
             ["Lenovo product", d.LenovoSB2023Product],
             ["Lenovo model prefix", d.LenovoSB2023ModelPrefix],
             ["Lenovo required BIOS for SB 2023 certificate", d.LenovoSB2023RequiredBios],
@@ -7798,7 +7823,7 @@ function renderTable(rows) {
             "<td>" + escapeHtml(d.AutopilotProfile) + "</td>" +
             "<td>" + escapeHtml(d.FirmwareVersion) + "</td>" +
             "<td>" + (isLenovoDevice(d) ? pill(d.LenovoSB2023Readiness || "Review", "lenovo") : "—") + "</td>" +
-            "<td>" + (isLenovoDevice(d) ? pill(d.LenovoSB2023Detected || "No remediation result", "sb2023detected") : "—") + "</td>" +
+            "<td>" + (isLenovoDevice(d) ? pill(d.SB2023Detected || "No remediation result", "sb2023detected") : "—") + "</td>" +
             "<td>" + (isLenovoDevice(d) ? escapeHtml(d.LenovoSB2023RequiredBios) : "—") + "</td>" +
             "<td>" + (isLenovoDevice(d) ? escapeHtml(d.LenovoSB2023Product) : "—") + "</td>" +
             "<td>" + (isDellDevice(d) ? pill(d.DellSB2023Readiness || "Review", "lenovo") : "—") + "</td>" +
