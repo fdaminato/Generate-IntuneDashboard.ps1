@@ -98,7 +98,7 @@ param(
 
     [switch]$UseDeviceCode,
 
-    [string]$DailyCsvArchiveRoot = "C:\Users\Florian.Daminato\OneDrive - ITI inc\Documents - Modern Workplace ITI\-Customers\Fairstone\DaaS\Daily CSVs",
+    [string]$DailyCsvArchiveRoot = "C:\temp\Daily CSVs",
 
     [switch]$OpenReport
 )
