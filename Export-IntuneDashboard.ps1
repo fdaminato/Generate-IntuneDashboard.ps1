@@ -98,7 +98,7 @@ param(
 
     [switch]$UseDeviceCode,
 
-    [string]$DailyCsvArchiveRoot = "C:\temp\Daily CSVs",
+    [string]$DailyCsvArchiveRoot = "c:\temp\DailyCSV",
 
     [switch]$OpenReport
 )
