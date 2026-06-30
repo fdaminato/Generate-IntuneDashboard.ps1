@@ -35,7 +35,10 @@ cd Intune-device-dashboard
 
 ```bash
 .\Export-IntuneDashboard.ps1 -MinimumUBR_26100 8037 -MinimumUBR_26200 8037 -MaxBitLockerRunStates 5000 -MaxDefenderDetailQueries 5000 -MaxInventoryRunStates 5000 -MaxSecureBootRunStates 5000 -OpenReport
-.\Export-IntuneDashboard.ps1 
+```
+or to get default script values
+```bash
+.\Export-IntuneDashboard.ps1
 ```
 
 ## Screenshots
