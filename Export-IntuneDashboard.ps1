@@ -30,9 +30,15 @@
     PowerShell 7 recommended
     Microsoft.Graph.Authentication
 
-.PERMISSIONS
+.AUTHENTICATION
+    Interactive delegated Microsoft Graph sign-in.
+    Browser sign-in is used by default. Use -UseDeviceCode if the browser or WAM prompt is hidden.
+
+.DELEGATED PERMISSIONS
     DeviceManagementManagedDevices.Read.All
+    DeviceManagementConfiguration.Read.All
     DeviceManagementScripts.Read.All
+    DeviceManagementServiceConfig.Read.All
     Directory.Read.All
     Organization.Read.All
     OrganizationalBranding.Read.All
@@ -41,10 +47,20 @@
 .EXECUTION
 
 Default values in script
-.\Export-IntuneDashboard.ps1 -OpenReport
+.\Export-IntuneDashboard-Interactive.ps1 -OpenReport
 
 Custom values
-.\Export-IntuneDashboard.ps1 -MinimumUBR_26100 8246 -MinimumUBR_26200 8246 -MaxBitLockerRunStates 5000 -MaxDefenderDetailQueries 5000 -MaxInventoryRunStates 5000 -MaxSecureBootRunStates 5000 -OpenReport
+.\Export-IntuneDashboard-Interactive.ps1 `
+    -MinimumUBR_26100 8246 `
+    -MinimumUBR_26200 8246 `
+    -MaxBitLockerRunStates 5000 `
+    -MaxDefenderDetailQueries 5000 `
+    -MaxInventoryRunStates 5000 `
+    -MaxSecureBootRunStates 5000 `
+    -OpenReport
+
+Use device-code login if needed
+.\Export-IntuneDashboard-Interactive.ps1 -UseDeviceCode -OpenReport
 
 
 #>
@@ -55,9 +71,9 @@ param(
 
     [string]$CustomerName,
 
-    [int]$MinimumUBR_26100 = 8246,
+    [int]$MinimumUBR_26100 = 8457,
 
-    [int]$MinimumUBR_26200 = 8246,
+    [int]$MinimumUBR_26200 = 8457,
 
     [int]$ReportExportTimeoutSeconds = 300,
 
@@ -87,10 +103,6 @@ param(
 
     [string]$VIPDeviceGroupName = "OLN_MEM_Win_WUfB_VIP_Devices",
 
-    [string]$GraphClientId = "14d82eec-204b-4c2f-b7e8-296a70dab67e",
-
-    [string]$GraphTenantId = "organizations",
-
     [ValidateSet("Process", "CurrentUser")]
     [string]$GraphContextScope = "Process",
 
@@ -98,7 +110,7 @@ param(
 
     [switch]$UseDeviceCode,
 
-    [string]$DailyCsvArchiveRoot = "C:\temp\DailyCSVs",
+    [string]$DailyCsvArchiveRoot = "C:\Users\Florian.Daminato\OneDrive - ITI inc\Documents - Modern Workplace ITI\-Customers\Fairstone\DaaS\Daily CSVs",
 
     [switch]$OpenReport
 )
@@ -641,7 +653,7 @@ Precision,Precision 7960 XL Rack,2.8.3
 '@
 
 # ============================================================
-# Module / Graph connection
+# Module / Graph connection - interactive delegated sign-in
 # ============================================================
 
 if (-not (Get-Module -ListAvailable -Name Microsoft.Graph.Authentication)) {
@@ -655,6 +667,7 @@ $Scopes = @(
     "DeviceManagementManagedDevices.Read.All",
     "DeviceManagementConfiguration.Read.All",
     "DeviceManagementScripts.Read.All",
+    "DeviceManagementServiceConfig.Read.All",
     "Directory.Read.All",
     "Organization.Read.All",
     "OrganizationalBranding.Read.All",
@@ -665,10 +678,6 @@ function Connect-DashboardMgGraph {
     param(
         [Parameter(Mandatory)]
         [string[]]$Scopes,
-
-        [string]$ClientId,
-
-        [string]$TenantId,
 
         [ValidateSet("Process", "CurrentUser")]
         [string]$ContextScope,
@@ -692,14 +701,6 @@ function Connect-DashboardMgGraph {
         }
     }
 
-    if (-not $UseDeviceCode -and -not [string]::IsNullOrWhiteSpace($ClientId) -and $ConnectCommand.Parameters.ContainsKey("ClientId")) {
-        $ConnectParameters.ClientId = $ClientId
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($TenantId) -and $ConnectCommand.Parameters.ContainsKey("TenantId")) {
-        $ConnectParameters.TenantId = $TenantId
-    }
-
     if ($UseDeviceCode -and $ConnectCommand.Parameters.ContainsKey("UseDeviceCode")) {
         $ConnectParameters.UseDeviceCode = $true
     }
@@ -713,28 +714,25 @@ function Connect-DashboardMgGraph {
 
 function Test-DashboardMgGraphConnection {
     try {
-        Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/organization?`$select=id" -ErrorAction Stop | Out-Null
+        Invoke-MgGraphRequest `
+            -Method GET `
+            -Uri "https://graph.microsoft.com/v1.0/organization?`$select=id" `
+            -ErrorAction Stop | Out-Null
     }
     catch {
         $Message = $_.Exception.Message
         throw @"
-Microsoft Graph sign-in completed, but the SDK could not acquire a usable token.
+Microsoft Graph sign-in completed, but the SDK could not acquire a usable token or the account does not have the required delegated permissions.
 
 Underlying error:
 $Message
 
-Try rerunning from a new PowerShell window. If browser auth is hidden in your terminal, rerun with -UseDeviceCode.
+Try rerunning from a new PowerShell window. If browser authentication is hidden in your terminal, rerun with -UseDeviceCode.
 "@
     }
 }
 
 $Context = Get-MgContext -ErrorAction SilentlyContinue
-
-if ($Context -and [string]::IsNullOrWhiteSpace($Context.ClientId)) {
-    Write-Host "Current Graph session is missing a client id. Reconnecting..." -ForegroundColor Yellow
-    Disconnect-MgGraph | Out-Null
-    $Context = $null
-}
 
 if ($Context -and $Context.ContextScope -and ([string]$Context.ContextScope -ne $GraphContextScope)) {
     Write-Host "Current Graph session context scope is $($Context.ContextScope). Reconnecting with $GraphContextScope scope..." -ForegroundColor Yellow
@@ -745,8 +743,13 @@ if ($Context -and $Context.ContextScope -and ([string]$Context.ContextScope -ne 
 $ConnectedThisRun = $false
 
 if (-not $Context) {
-    Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Yellow
-    Connect-DashboardMgGraph -Scopes $Scopes -ClientId $GraphClientId -TenantId $GraphTenantId -ContextScope $GraphContextScope -DisableLoginByWAM $DisableLoginByWAM -UseDeviceCode:$UseDeviceCode
+    Write-Host "Connecting to Microsoft Graph interactively..." -ForegroundColor Yellow
+    Connect-DashboardMgGraph `
+        -Scopes $Scopes `
+        -ContextScope $GraphContextScope `
+        -DisableLoginByWAM $DisableLoginByWAM `
+        -UseDeviceCode:$UseDeviceCode
+
     $ConnectedThisRun = $true
 }
 else {
@@ -763,7 +766,12 @@ else {
     if ($MissingScopes.Count -gt 0) {
         Write-Host "Current Graph session is missing scope(s): $($MissingScopes -join ', ')" -ForegroundColor Yellow
         Disconnect-MgGraph | Out-Null
-        Connect-DashboardMgGraph -Scopes $Scopes -ClientId $GraphClientId -TenantId $GraphTenantId -ContextScope $GraphContextScope -DisableLoginByWAM $DisableLoginByWAM -UseDeviceCode:$UseDeviceCode
+        Connect-DashboardMgGraph `
+            -Scopes $Scopes `
+            -ContextScope $GraphContextScope `
+            -DisableLoginByWAM $DisableLoginByWAM `
+            -UseDeviceCode:$UseDeviceCode
+
         $ConnectedThisRun = $true
     }
 }
@@ -776,8 +784,20 @@ catch {
 
     Write-Host "Existing Graph session could not acquire a token. Reconnecting..." -ForegroundColor Yellow
     Disconnect-MgGraph | Out-Null
-    Connect-DashboardMgGraph -Scopes $Scopes -ClientId $GraphClientId -TenantId $GraphTenantId -ContextScope $GraphContextScope -DisableLoginByWAM $DisableLoginByWAM -UseDeviceCode:$UseDeviceCode
+    Connect-DashboardMgGraph `
+        -Scopes $Scopes `
+        -ContextScope $GraphContextScope `
+        -DisableLoginByWAM $DisableLoginByWAM `
+        -UseDeviceCode:$UseDeviceCode
+
     Test-DashboardMgGraphConnection
+}
+
+$GraphContext = Get-MgContext -ErrorAction SilentlyContinue
+if ($GraphContext) {
+    Write-Host "Connected to Microsoft Graph interactively." -ForegroundColor Green
+    Write-Host "Account:   $($GraphContext.Account)" -ForegroundColor Green
+    Write-Host "Tenant ID: $($GraphContext.TenantId)" -ForegroundColor Green
 }
 
 # ============================================================
@@ -915,12 +935,24 @@ function Invoke-GraphGetAllSafe {
         [Parameter(Mandatory)]
         [string]$Uri,
 
-        [int]$MaxItems = 1200
+        [int]$MaxItems = 1200,
+
+        # Intune / Graph beta endpoints can occasionally return 500 / 503 / 504 / 429.
+        # Retry transient failures instead of immediately returning an empty result set.
+        [int]$MaxRetries = 4,
+
+        [int]$RetryDelaySeconds = 10
     )
 
     $Results = @()
     $NextUri = $Uri
     $FailedUri = ""
+    $OriginalUri = $Uri
+
+    # If the first page keeps failing, retry the first call with a smaller page size.
+    # This helps when Intune fails while materializing a larger deviceRunStates page.
+    $FallbackTopValues = @(25, 10, 5)
+    $FallbackTopIndex = 0
 
     while ($NextUri) {
         if ($Results.Count -ge $MaxItems) {
@@ -928,26 +960,83 @@ function Invoke-GraphGetAllSafe {
             break
         }
 
-        try {
-            Write-Host "GET $NextUri" -ForegroundColor DarkGray
-            $Response = Invoke-MgGraphRequest -Method GET -Uri $NextUri
+        $Response = $null
+        $Attempt = 0
+        $PageSucceeded = $false
 
-            if ($Response.value) {
-                foreach ($Item in @($Response.value)) {
-                    if ($Results.Count -lt $MaxItems) {
-                        $Results += $Item
+        while (-not $PageSucceeded) {
+            try {
+                Write-Host "GET $NextUri" -ForegroundColor DarkGray
+                $Response = Invoke-MgGraphRequest -Method GET -Uri $NextUri -ErrorAction Stop
+                $PageSucceeded = $true
+            }
+            catch {
+                $Attempt++
+
+                $Message = $_.Exception.Message
+                $StatusCode = ""
+
+                try {
+                    if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
+                        $StatusCode = [int]$_.Exception.Response.StatusCode
                     }
                 }
-            }
+                catch {
+                    $StatusCode = ""
+                }
 
-            $NextUri = $Response.'@odata.nextLink'
+                $IsTransient =
+                    ($StatusCode -in @(429, 500, 502, 503, 504)) -or
+                    ($Message -match '(?i)InternalServerError|TooManyRequests|ServiceUnavailable|BadGateway|GatewayTimeout|timeout|temporarily|throttl')
+
+                if ($IsTransient -and $Attempt -le $MaxRetries) {
+                    $Delay = [math]::Min(120, ($RetryDelaySeconds * [math]::Pow(2, ($Attempt - 1))))
+                    Write-Warning "Graph page failed with a transient error. Retry $Attempt/$MaxRetries in $Delay seconds."
+                    Write-Warning $Message
+                    Start-Sleep -Seconds $Delay
+                    continue
+                }
+
+                # If this is the very first page and it keeps failing, retry with smaller $top values.
+                if ($Results.Count -eq 0 -and $NextUri -eq $OriginalUri -and $OriginalUri -match '\$top=\d+' -and $FallbackTopIndex -lt $FallbackTopValues.Count) {
+                    $FallbackTop = $FallbackTopValues[$FallbackTopIndex]
+                    $FallbackTopIndex++
+
+                    $NextUri = [System.Text.RegularExpressions.Regex]::Replace(
+                        $OriginalUri,
+                        '\$top=\d+',
+                        ('$top=' + $FallbackTop)
+                    )
+
+                    Write-Warning "Graph first page still failed. Retrying with a smaller page size: `$top=$FallbackTop"
+                    Start-Sleep -Seconds 5
+
+                    # Restart the inner retry loop for the new smaller page.
+                    $Attempt = 0
+                    continue
+                }
+
+                $FailedUri = $NextUri
+                Write-Warning "Graph page failed after retries. Keeping partial results and stopping."
+                Write-Warning $Message
+                $NextUri = $null
+                break
+            }
         }
-        catch {
-            $FailedUri = $NextUri
-            Write-Warning "Graph page failed. Keeping partial results and stopping."
-            Write-Warning $_.Exception.Message
-            $NextUri = $null
+
+        if (-not $PageSucceeded -or -not $Response) {
+            continue
         }
+
+        if ($Response.value) {
+            foreach ($Item in @($Response.value)) {
+                if ($Results.Count -lt $MaxItems) {
+                    $Results += $Item
+                }
+            }
+        }
+
+        $NextUri = $Response.'@odata.nextLink'
     }
 
     return @{
@@ -2263,7 +2352,7 @@ function Invoke-PrimaryUserBatch {
 
     try {
         $BodyJson = @{ requests = $Requests } | ConvertTo-Json -Depth 20
-        $Response = Invoke-MgGraphRequest -Method POST -Uri "https://graph.microsoft.com/v1.0/`$batch" -Body $BodyJson -ContentType "application/json" -ErrorAction Stop
+        $Response = Invoke-MgGraphRequest -Method POST -Uri "https://graph.microsoft.com/beta/`$batch" -Body $BodyJson -ContentType "application/json" -ErrorAction Stop
         $BatchResponses = @(Get-RawPropertyValue -Object $Response -PropertyNames @("responses"))
 
         foreach ($BatchResponse in $BatchResponses) {
@@ -5770,116 +5859,380 @@ $Html = @"
 <title>Intune Device Dashboard</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
-:root {
-  --bg:#f4f7fb; --surface:#ffffff; --surface2:#eef3f9; --surface3:#dde7f2; --border:#e2eaf3; --text:#0f1e33; --muted:#5e7292;
-  --accent:#2563eb; --accent-2:#3b82f6; --accent-soft:#dbe8fe; --navy:#1e3a8a;
-  --green:#059669; --green-soft:#d1fae5; --red:#dc2626; --red-soft:#fde2e2; --amber:#d97706; --amber-soft:#fef3c7;
-  --teal:#0d9488; --teal-soft:#cdeee9; --purple:#7c3aed; --purple-soft:#ede9fe;
-  --radius:12px; --radius-sm:8px;
-  --shadow:0 2px 6px rgb(30 60 120 / .06), 0 1px 2px rgb(30 60 120 / .04);
-  --shadow-hover:0 8px 22px rgb(30 60 120 / .13);
-  --font:Inter, "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
-  --mono:"SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
-}
-[data-theme="dark"] {
-  --bg:#0c1524; --surface:#14213a; --surface2:#1c2c49; --surface3:#284066; --border:#243a5e; --text:#e8f0fb; --muted:#93a7c4;
-  --accent:#60a5fa; --accent-2:#93c5fd; --accent-soft:rgba(96,165,250,.15); --navy:#93c5fd;
-  --green:#34d399; --green-soft:rgba(16,185,129,.15); --red:#f87171; --red-soft:rgba(239,68,68,.15); --amber:#fbbf24; --amber-soft:rgba(245,158,11,.15);
-  --teal:#2dd4bf; --teal-soft:rgba(45,212,191,.15); --purple:#a78bfa; --purple-soft:rgba(139,92,246,.15);
-  --shadow:0 2px 6px rgb(0 0 0 / .30); --shadow-hover:0 8px 22px rgb(0 0 0 / .45);
-}
-* { box-sizing:border-box; }
-html { scroll-behavior:smooth; }
-body { margin:0; min-height:100vh; background:var(--bg); color:var(--text); font:14px/1.45 var(--font); -webkit-font-smoothing:antialiased; }
-button, input, select { font:inherit; }
-header { position:sticky; top:0; z-index:100; }
-.topbar { min-height:68px; display:flex; align-items:center; gap:18px; padding:12px 28px; background:var(--surface); border-top:3px solid var(--accent); border-bottom:1px solid var(--border); box-shadow:var(--shadow); }
-.brand-left { min-width:0; display:flex; align-items:center; gap:12px; }
-.tenant-logo { display:block; max-height:38px; max-width:220px; object-fit:contain; }
-.logo-fallback { width:38px; height:38px; min-width:38px; overflow:hidden; padding:0 7px; border-radius:10px; display:flex; align-items:center; justify-content:center; background:linear-gradient(135deg,var(--accent),var(--navy)); color:#fff; font-size:10px; line-height:1.05; text-align:center; font-weight:800; box-shadow:var(--shadow); }
-h1 { margin:0; font-size:16px; line-height:1.2; letter-spacing:-.01em; color:var(--text); }
-.subtitle { margin-top:3px; color:var(--muted); font-size:11.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.topbar-actions { margin-left:auto; display:flex; align-items:center; gap:10px; }
-.btn { border:1px solid var(--border); border-radius:var(--radius-sm); padding:8px 12px; background:var(--surface); color:var(--text); cursor:pointer; font-size:12.5px; font-weight:600; white-space:nowrap; transition:.15s ease; }
-.btn:hover { background:var(--surface2); transform:translateY(-1px); }
-.generated { min-width:164px; padding-left:12px; border-left:1px solid var(--border); color:var(--muted); font-size:11.5px; line-height:1.35; text-align:right; }
-.generated strong { color:var(--text); font-weight:700; }
-.layout { max-width:1600px; margin:0 auto; padding:26px 32px 38px; }
-.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:14px; margin-bottom:26px; }
-.grid > .card { position:relative; min-height:132px; padding:16px 17px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); overflow:hidden; transition:.15s ease; }
-.grid > .card:hover { box-shadow:var(--shadow-hover); transform:translateY(-1px); }
-.grid > .card::before { content:""; position:absolute; top:0; left:0; right:0; height:3px; background:var(--accent); opacity:.8; }
-.grid > .card:has(.good)::before { background:var(--green); }
-.grid > .card:has(.bad)::before { background:var(--red); }
-.grid > .card:has(.warn)::before { background:var(--amber); }
-.grid > .card:has(.info)::before { background:var(--teal); }
-.card-title { color:var(--muted); font-size:10.5px; font-weight:700; line-height:1.35; text-transform:uppercase; letter-spacing:.055em; }
-.card-value { margin-top:9px; color:var(--text); font-size:27px; font-weight:800; line-height:1; letter-spacing:-.025em; }
-.card-note { margin-top:7px; color:var(--muted); font-size:11.5px; line-height:1.4; }
-.good { color:var(--green) !important; } .bad { color:var(--red) !important; } .warn { color:var(--amber) !important; } .info { color:var(--accent) !important; }
-.section { margin-top:26px; padding:0; background:transparent; border:0; box-shadow:none; }
-.section h2 { display:flex; align-items:center; gap:8px; margin:0 0 13px; color:var(--muted); font-size:12.5px; font-weight:800; text-transform:uppercase; letter-spacing:.065em; }
-.section h2::before { content:""; width:4px; height:17px; border-radius:999px; background:var(--accent); }
-.section > .mini-grid, .section > .issue-list, .section > .toolbar, .section > .card-note, .section > .table-wrap { }
-.issue-list { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:12px; }
-.issue-row { min-height:86px; display:grid; grid-template-columns:34px 1fr auto; gap:11px; align-items:center; padding:13px 14px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); }
-.issue-icon { font-size:19px; } .issue-title { color:var(--text); font-weight:700; } .issue-subtitle { margin-top:2px; color:var(--muted); font-size:11.5px; } .issue-count { font-size:22px; font-weight:800; }
-.mini-grid { display:grid; grid-template-columns:repeat(3,minmax(260px,1fr)); gap:14px; }
-.section .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); }
-.chart-card { min-height:204px; display:grid; grid-template-columns:138px minmax(0,1fr); align-items:center; gap:17px; padding:16px; }
-.pie { position:relative; width:132px; height:132px; border-radius:50%; background:conic-gradient(var(--surface3) 0deg 360deg); box-shadow:inset 0 0 0 1px var(--border); }
-.pie::after { content:""; position:absolute; inset:26px; background:var(--surface); border:1px solid var(--border); border-radius:50%; }
-.pie-center { position:absolute; inset:0; z-index:1; display:flex; align-items:center; justify-content:center; color:var(--text); font-size:18px; font-weight:800; }
-.legend { display:grid; gap:8px; color:var(--text); font-size:12px; }
-.legend-row { display:grid; grid-template-columns:11px 1fr auto; gap:8px; align-items:center; } .legend-row strong { color:var(--text); font-size:11.5px; }
-.dot { width:10px; height:10px; border-radius:999px; } .dot.green { background:var(--green); } .dot.red { background:var(--red); } .dot.orange { background:var(--amber); } .dot.gray { background:var(--muted); } .dot.blue { background:var(--accent); } .dot.purple { background:var(--purple); } .dot.cyan { background:var(--teal); }
-.toolbar { display:flex; gap:9px; flex-wrap:wrap; padding:14px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); }
-input, select, .check-filter summary, .toolbar button { min-height:38px; padding:8px 10px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text); font-size:12.5px; box-shadow:none; }
-input { min-width:240px; } input[type="date"] { min-width:142px; } input::placeholder { color:var(--muted); }
-select, .check-filter summary { cursor:pointer; } .toolbar button { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:700; cursor:pointer; } .toolbar button:hover { background:var(--navy); }
-.check-filter { position:relative; min-width:168px; } .check-filter summary { list-style:none; min-width:168px; user-select:none; } .check-filter summary::-webkit-details-marker { display:none; } .check-filter summary::after { content:"⌄"; float:right; margin-left:12px; color:var(--muted); } .check-filter[open] summary::after { content:"⌃"; }
-.check-filter-panel { position:absolute; z-index:30; top:calc(100% + 6px); left:0; display:grid; gap:3px; min-width:100%; width:max-content; max-height:300px; overflow:auto; padding:7px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-sm); box-shadow:var(--shadow-hover); }
-.check-filter-panel label { display:flex; align-items:center; gap:8px; padding:6px 7px; border-radius:6px; color:var(--text); font-size:12px; white-space:nowrap; cursor:pointer; } .check-filter-panel label:hover { background:var(--surface2); } .check-filter-panel input[type="checkbox"] { width:15px; min-width:15px; height:15px; margin:0; padding:0; accent-color:var(--accent); }
-.filter-label { display:flex; align-items:center; gap:7px; padding:0 0 0 9px; color:var(--muted); font-size:12px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-sm); } .filter-label input { min-width:132px; min-height:36px; padding:6px 8px; border:0; border-left:1px solid var(--border); border-radius:0; }
-.section > .card-note { margin:10px 2px 9px; }
-.table-wrap { overflow:auto; max-height:720px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); }
-table { width:100%; border-collapse:collapse; font-size:12.5px; white-space:nowrap; } th { position:sticky; top:0; z-index:2; padding:11px 12px; background:var(--surface2); border-bottom:1px solid var(--border); color:var(--muted); text-align:left; font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.045em; } td { padding:10px 12px; border-bottom:1px solid var(--border); vertical-align:top; } tbody tr:hover td { background:var(--surface2); } tbody tr:last-child td { border-bottom:0; }
-.pill { display:inline-flex; align-items:center; padding:3px 8px; border:1px solid var(--border); border-radius:999px; background:var(--surface3); color:var(--muted); font-size:10.5px; font-weight:700; } .pill.good { background:var(--green-soft); border-color:transparent; color:var(--green) !important; } .pill.bad { background:var(--red-soft); border-color:transparent; color:var(--red) !important; } .pill.warn { background:var(--amber-soft); border-color:transparent; color:var(--amber) !important; }
-.clickable-row { cursor:pointer; } .clickable-row:hover td { background:var(--accent-soft) !important; }
-.drawer-backdrop { display:none; position:fixed; inset:0; z-index:1000; background:rgb(4 12 26 / .55); backdrop-filter:blur(2px); } .drawer-backdrop.open { display:block; }
-.device-drawer { position:fixed; z-index:1001; top:0; right:-780px; width:min(780px,95vw); height:100vh; display:flex; flex-direction:column; background:var(--surface); border-left:1px solid var(--border); box-shadow:-24px 0 60px rgb(0 0 0 / .28); transition:right .2s ease; } .device-drawer.open { right:0; }
-.drawer-header { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding:18px 20px; background:var(--surface2); border-top:3px solid var(--accent); border-bottom:1px solid var(--border); } .drawer-title { color:var(--text); font-size:20px; font-weight:800; letter-spacing:-.02em; } .drawer-subtitle { margin-top:3px; color:var(--muted); font-size:12px; } .drawer-close { min-height:34px; padding:7px 10px; color:var(--text); background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-sm); cursor:pointer; font-weight:700; }
-.drawer-content { display:grid; gap:13px; padding:18px; overflow:auto; } .drawer-section { padding:14px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-sm); } .drawer-section h3 { margin:0 0 10px; color:var(--muted); font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.055em; } .drawer-kv { display:grid; grid-template-columns:210px minmax(0,1fr); gap:8px 14px; font-size:12.5px; } .drawer-kv .k { color:var(--muted); font-weight:700; } .drawer-kv .v { color:var(--text); overflow-wrap:anywhere; }
-footer { max-width:1600px; margin:0 auto; padding:0 32px 32px; color:var(--muted); font-size:11.5px; }
-::-webkit-scrollbar { width:9px; height:9px; } ::-webkit-scrollbar-track { background:transparent; } ::-webkit-scrollbar-thumb { background:var(--surface3); border:2px solid var(--surface); border-radius:999px; }
-@media (max-width:1180px) { .mini-grid { grid-template-columns:1fr; } .topbar { align-items:flex-start; } }
-@media (max-width:760px) { header { position:static; } .topbar { align-items:flex-start; flex-direction:column; padding:14px 16px; } .topbar-actions { width:100%; margin:0; flex-wrap:wrap; } .generated { margin-left:auto; border-left:0; padding-left:0; } .layout { padding:20px 14px 30px; } .grid { grid-template-columns:1fr; } .toolbar > * { width:100%; } input, select, .check-filter, .check-filter summary { min-width:100%; } .filter-label { justify-content:space-between; } .chart-card { grid-template-columns:1fr; } .pie { margin:0 auto; } .drawer-kv { grid-template-columns:1fr; gap:3px; } footer { padding:0 14px 24px; } }
-@media print { header { position:static; } .topbar-actions .btn, .toolbar, .drawer-backdrop, .device-drawer { display:none !important; } .layout { max-width:none; padding:12px; } .grid > .card, .section .card, .table-wrap { box-shadow:none; } }
+    :root {
+        --bg: #f4f7fb;
+        --surface: #ffffff;
+        --text: #102033;
+        --muted: #64748b;
+        --border: #dbe4ee;
+        --shadow: 0 18px 45px rgba(15, 23, 42, 0.08);
+        --blue: #2563eb;
+        --green: #16a34a;
+        --red: #dc2626;
+        --orange: #f59e0b;
+        --gray: #94a3b8;
+        --purple: #7c3aed;
+        --cyan: #0891b2;
+        --green-soft: #dcfce7;
+        --red-soft: #fee2e2;
+        --orange-soft: #fef3c7;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+        margin: 0;
+        font-family: Segoe UI, Arial, sans-serif;
+        background:
+            radial-gradient(circle at top left, #e0ecff 0, transparent 34%),
+            linear-gradient(180deg, #f8fbff 0, #eef3f9 100%);
+        color: var(--text);
+    }
+
+    header { padding: 28px 34px 16px 34px; }
+
+    .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+        background: rgba(255,255,255,0.86);
+        border: 1px solid var(--border);
+        border-radius: 24px;
+        padding: 18px 22px;
+        box-shadow: var(--shadow);
+    }
+
+    .brand-left { display: flex; align-items: center; gap: 18px; }
+
+    .tenant-logo {
+        max-height: 56px;
+        max-width: 280px;
+        object-fit: contain;
+        display: block;
+    }
+
+    .logo-fallback {
+        min-width: 52px;
+        height: 52px;
+        padding: 0 18px;
+        border-radius: 16px;
+        background: #0f172a;
+        color: #ffffff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 800;
+    }
+
+    h1 { margin: 0; font-size: 30px; letter-spacing: -0.7px; color: #0f172a; }
+    .subtitle { color: var(--muted); margin-top: 6px; font-size: 14px; }
+    .generated { text-align: right; color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .layout { padding: 18px 34px 40px 34px; }
+
+    .grid {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(160px, 1fr));
+        gap: 16px;
+        margin-bottom: 18px;
+    }
+
+    .card {
+        background: rgba(255,255,255,0.92);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        padding: 18px;
+        box-shadow: var(--shadow);
+    }
+
+    .card-title {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 700;
+    }
+
+    .card-value { font-size: 34px; font-weight: 800; margin-top: 8px; color: #0f172a; }
+    .card-note { color: var(--muted); font-size: 13px; margin-top: 6px; line-height: 1.5; }
+
+    .issue-list { display: grid; gap: 10px; margin-top: 10px; }
+    .issue-row {
+        display: grid;
+        grid-template-columns: 34px 1fr auto;
+        gap: 10px;
+        align-items: center;
+        padding: 11px 12px;
+        background: #ffffff;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+    }
+    .issue-icon { font-size: 18px; }
+    .issue-title { font-weight: 700; color: #0f172a; }
+    .issue-subtitle { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .issue-count { font-size: 20px; font-weight: 800; }
+    .good { color: var(--green); }
+    .bad { color: var(--red); }
+    .warn { color: var(--orange); }
+    .info { color: var(--blue); }
+
+    .section {
+        background: rgba(255,255,255,0.86);
+        border: 1px solid var(--border);
+        border-radius: 22px;
+        padding: 20px;
+        margin-top: 18px;
+        box-shadow: var(--shadow);
+    }
+
+    .section h2 { margin: 0 0 14px 0; font-size: 20px; color: #0f172a; }
+
+    .mini-grid { display: grid; grid-template-columns: repeat(3, minmax(260px, 1fr)); gap: 16px; }
+    .chart-card { display: grid; grid-template-columns: 150px 1fr; gap: 18px; align-items: center; min-height: 190px; }
+
+    .pie {
+        width: 140px;
+        height: 140px;
+        border-radius: 50%;
+        position: relative;
+        box-shadow: inset 0 0 0 1px rgba(15,23,42,0.08);
+        background: conic-gradient(var(--gray) 0deg 360deg);
+    }
+
+    .pie::after {
+        content: "";
+        position: absolute;
+        inset: 28px;
+        background: #ffffff;
+        border-radius: 50%;
+        box-shadow: inset 0 0 0 1px rgba(15,23,42,0.08);
+    }
+
+    .pie-center {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 2;
+        font-size: 19px;
+        font-weight: 800;
+        color: #0f172a;
+    }
+
+    .legend { display: grid; gap: 8px; font-size: 13px; color: #334155; }
+    .legend-row { display: grid; grid-template-columns: 12px 1fr auto; gap: 8px; align-items: center; }
+    .dot { width: 11px; height: 11px; border-radius: 999px; }
+    .dot.green { background: var(--green); }
+    .dot.red { background: var(--red); }
+    .dot.orange { background: var(--orange); }
+    .dot.gray { background: var(--gray); }
+    .dot.blue { background: var(--blue); }
+    .dot.purple { background: var(--purple); }
+    .dot.cyan { background: var(--cyan); }
+
+    .toolbar { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+
+    input, select, button, .check-filter summary {
+        background: #ffffff;
+        color: #0f172a;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 10px 12px;
+        font-size: 14px;
+        box-shadow: 0 6px 16px rgba(15,23,42,0.04);
+    }
+
+    input { min-width: 260px; }
+    input[type="date"] { min-width: 160px; }
+
+    .check-filter { position: relative; min-width: 170px; }
+    .check-filter summary { cursor: pointer; list-style: none; min-width: 170px; user-select: none; }
+    .check-filter summary::-webkit-details-marker { display: none; }
+    .check-filter summary:after { content: "v"; float: right; color: var(--muted); margin-left: 12px; }
+    .check-filter[open] summary:after { content: "^"; }
+
+    .check-filter-panel {
+        position: absolute;
+        top: calc(100% + 6px);
+        left: 0;
+        z-index: 30;
+        display: grid;
+        gap: 4px;
+        min-width: 100%;
+        width: max-content;
+        max-height: 300px;
+        overflow: auto;
+        padding: 8px;
+        background: #ffffff;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        box-shadow: 0 18px 36px rgba(15,23,42,0.14);
+    }
+
+    .check-filter-panel label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 8px;
+        border-radius: 8px;
+        font-size: 13px;
+        color: #334155;
+        white-space: nowrap;
+        cursor: pointer;
+    }
+
+    .check-filter-panel label:hover { background: #f8fafc; }
+    .check-filter-panel input[type="checkbox"] { min-width: 0; width: 16px; height: 16px; padding: 0; box-shadow: none; accent-color: #2563eb; }
+
+    button { cursor: pointer; background: #0f172a; color: #ffffff; border-color: #0f172a; font-weight: 600; }
+    button:hover { background: #1e293b; }
+
+    .filter-label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 13px;
+        background: #ffffff;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 6px 10px;
+        box-shadow: 0 6px 16px rgba(15,23,42,0.04);
+    }
+
+    .filter-label input { box-shadow: none; border-radius: 8px; padding: 8px; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; color: #334155; background: #eef4fb; position: sticky; top: 0; z-index: 2; font-weight: 700; }
+    th, td { padding: 10px; border-bottom: 1px solid #e5edf5; vertical-align: top; white-space: nowrap; }
+    tr:hover { background: #f8fafc; }
+    .table-wrap { overflow: auto; max-height: 720px; border: 1px solid var(--border); border-radius: 16px; background: #ffffff; }
+
+    .pill {
+        display: inline-block;
+        padding: 4px 9px;
+        border-radius: 999px;
+        font-size: 12px;
+        border: 1px solid var(--border);
+        background: #f8fafc;
+        color: #334155;
+        font-weight: 600;
+    }
+
+    .pill.good { background: var(--green-soft); border-color: #86efac; color: #166534; }
+    .pill.bad { background: var(--red-soft); border-color: #fca5a5; color: #991b1b; }
+    .pill.warn { background: var(--orange-soft); border-color: #fcd34d; color: #92400e; }
+
+    .clickable-row { cursor: pointer; }
+    .clickable-row:hover { background: #eef6ff !important; }
+
+    .drawer-backdrop {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(15,23,42,0.45);
+        z-index: 100;
+    }
+
+    .drawer-backdrop.open { display: block; }
+
+    .device-drawer {
+        position: fixed;
+        top: 0;
+        right: -760px;
+        width: min(760px, 94vw);
+        height: 100vh;
+        background: #ffffff;
+        z-index: 101;
+        box-shadow: -24px 0 60px rgba(15,23,42,0.25);
+        transition: right .2s ease;
+        display: flex;
+        flex-direction: column;
+        border-left: 1px solid var(--border);
+    }
+
+    .device-drawer.open { right: 0; }
+
+    .drawer-header {
+        padding: 20px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 16px;
+        background: #f8fbff;
+    }
+
+    .drawer-title { font-size: 22px; font-weight: 800; color: #0f172a; margin-bottom: 4px; }
+    .drawer-subtitle { color: var(--muted); font-size: 13px; }
+    .drawer-close { min-width: auto; padding: 8px 12px; }
+
+    .drawer-content {
+        padding: 18px;
+        overflow: auto;
+        display: grid;
+        gap: 14px;
+    }
+
+    .drawer-section {
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 14px;
+        background: #ffffff;
+    }
+
+    .drawer-section h3 {
+        margin: 0 0 10px 0;
+        font-size: 15px;
+        color: #0f172a;
+    }
+
+    .drawer-kv {
+        display: grid;
+        grid-template-columns: 220px 1fr;
+        gap: 8px 14px;
+        font-size: 13px;
+    }
+
+    .drawer-kv .k { color: var(--muted); font-weight: 600; }
+    .drawer-kv .v { color: #0f172a; overflow-wrap: anywhere; }
+
+    footer { color: var(--muted); padding: 20px 34px 35px 34px; font-size: 12px; }
+
+    @media (max-width: 1400px) {
+        .grid { grid-template-columns: repeat(3, minmax(180px, 1fr)); }
+        .mini-grid { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 760px) {
+        .topbar { flex-direction: column; align-items: flex-start; }
+        .generated { text-align: left; }
+        .grid { grid-template-columns: 1fr; }
+        input { min-width: 100%; }
+        .chart-card { grid-template-columns: 1fr; }
+    }
 </style>
 </head>
-<body data-theme="light">
+<body>
 
 <header>
     <div class="topbar">
         <div class="brand-left">
             $LogoHtml
             <div>
-                <h1>Intune Device Dashboard</h1>
+                <h1>🖥️ Intune Device Dashboard</h1>
                 <div class="subtitle">$SafeTenantName</div>
             </div>
         </div>
-        <div class="topbar-actions">
-            <button class="btn" type="button" onclick="toggleTheme()"><span id="themeButtonIcon">◐</span> <span id="themeButtonText">Theme</span></button>
-            <button class="btn" type="button" onclick="window.print()">🖨 Print</button>
-            <div class="generated">
-                <strong>Generated</strong><br>
-                $GeneratedOn
-            </div>
+        <div class="generated">
+            <strong>Generated</strong><br>
+            $GeneratedOn
         </div>
     </div>
 </header>
 
-<main class="layout">
+<div class="layout">
 
     <div class="grid">
         <div class="card">
@@ -6295,7 +6648,7 @@ footer { max-width:1600px; margin:0 auto; padding:0 32px 32px; color:var(--muted
             <details class="check-filter" id="manufacturerFilterMenu">
                 <summary><span id="manufacturerFilterSummary">All manufacturers</span></summary>
                 <div class="check-filter-panel" id="manufacturerFilterPanel"></div>
-            </details>
+            </details>2023 detec
 
             <details class="check-filter" id="managementAgentFilterMenu">
                 <summary><span id="managementAgentFilterSummary">All mgmt agents</span></summary>
@@ -6391,7 +6744,7 @@ footer { max-width:1600px; margin:0 auto; padding:0 32px 32px; color:var(--muted
         </div>
     </div>
 
-</main>
+</div>
 
 <div class="drawer-backdrop" id="drawerBackdrop" onclick="closeDeviceDrawer()"></div>
 <aside class="device-drawer" id="deviceDrawer">
@@ -7624,26 +7977,6 @@ function downloadVisibleCsv() {
     }, 1000);
 }
 
-function toggleTheme() {
-    const isDark = document.body.getAttribute("data-theme") === "dark";
-    const nextTheme = isDark ? "light" : "dark";
-    document.body.setAttribute("data-theme", nextTheme);
-
-    const icon = document.getElementById("themeButtonIcon");
-    const text = document.getElementById("themeButtonText");
-    if (icon) icon.textContent = nextTheme === "dark" ? "☀" : "◐";
-    if (text) text.textContent = nextTheme === "dark" ? "Light" : "Theme";
-
-    try { localStorage.setItem("intuneDashboardTheme", nextTheme); } catch (e) {}
-}
-
-function restoreTheme() {
-    let savedTheme = "light";
-    try { savedTheme = localStorage.getItem("intuneDashboardTheme") || "light"; } catch (e) {}
-    if (savedTheme === "dark") toggleTheme();
-}
-
-restoreTheme();
 populateDynamicFilters();
 setupFilterMenus();
 renderDashboard();
