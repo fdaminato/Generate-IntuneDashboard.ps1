@@ -51,8 +51,8 @@ Default values in script
 
 Custom values
 .\Export-IntuneDashboard-Interactive.ps1 `
-    -MinimumUBR_26100 8246 `
-    -MinimumUBR_26200 8246 `
+    -MinimumUBR_26100 8655 `
+    -MinimumUBR_26200 8655 `
     -MaxBitLockerRunStates 5000 `
     -MaxDefenderDetailQueries 5000 `
     -MaxInventoryRunStates 5000 `
@@ -110,7 +110,7 @@ param(
 
     [switch]$UseDeviceCode,
 
-    [string]$DailyCsvArchiveRoot = "C:\temp\Daily CSVs",
+    [string]$DailyCsvArchiveRoot = "C:\Users\Florian.Daminato\OneDrive - ITI inc\Documents - Modern Workplace ITI\-Customers\Fairstone\DaaS\Daily CSVs",
 
     [switch]$OpenReport
 )
